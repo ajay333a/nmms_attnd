@@ -4,3 +4,4 @@ streamlit
 selenium
 openpyxl
 Pillow
+pandas

@@ -93,13 +93,21 @@ def prompt_for_work_selection(work_codes, panchayath_name):
         workcodes = [code.strip() for code in workcode_input.split(',')]
     return choice, workcodes
 
-def save_attendance_excel(wb, ws, img_wb, img_ws, rfo_wb, panchayath_name, attendance_date):
-    wb.save(f"nmr_{panchayath_name.lower().replace('.', '').replace(' ', '_')}_{attendance_date.replace('/', '_')}.xlsx")
-    img_wb.save(f"nmr_images_{panchayath_name.lower().replace('.', '').replace(' ', '_')}_{attendance_date.replace('/', '_')}.xlsx")
-    rfo_wb.save(f"verification_format_{panchayath_name.lower().replace('.', '').replace(' ', '_')}_{attendance_date.replace('/', '_')}.xlsx")
-    print(f"Saved nmr_{panchayath_name.lower().replace('.', '').replace(' ', '_')}_{attendance_date.replace('/', '_')}.xlsx")
-    print(f"Saved nmr_images_{panchayath_name.lower().replace('.', '').replace(' ', '_')}_{attendance_date.replace('/', '_')}.xlsx")
-    print(f"Saved verification_format_{panchayath_name.lower().replace('.', '').replace(' ', '_')}_{attendance_date.replace('/', '_')}.xlsx")
+def save_attendance_excel(wb, img_wb, rfo_wb):
+    """Saves workbooks to memory and returns them as BytesIO objects."""
+    wb_bytes = io.BytesIO()
+    wb.save(wb_bytes)
+    wb_bytes.seek(0)
+
+    img_wb_bytes = io.BytesIO()
+    img_wb.save(img_wb_bytes)
+    img_wb_bytes.seek(0)
+
+    rfo_wb_bytes = io.BytesIO()
+    rfo_wb.save(rfo_wb_bytes)
+    rfo_wb_bytes.seek(0)
+    
+    return wb_bytes, img_wb_bytes, rfo_wb_bytes
 
 def save_raw_excel(rows_to_save, panchayath_name, attendance_date, muster_no_idx, workcode_idx, panchayath_url, muster_data_cache):
     raw_wb = openpyxl.Workbook()
@@ -150,8 +158,11 @@ def save_raw_excel(rows_to_save, panchayath_name, attendance_date, muster_no_idx
                 attendance_cell.fill = PRESENT_FILL
             elif attendance_status.upper() == 'A':
                 attendance_cell.fill = ABSENT_FILL
-    raw_wb.save(f"nmr_raw_{panchayath_name.lower().replace('.', '').replace(' ', '_')}_{attendance_date.replace('/', '_')}.xlsx")
-    print(f"Saved nmr_raw_{panchayath_name.lower().replace('.', '').replace(' ', '_')}_{attendance_date.replace('/', '_')}.xlsx")
+
+    raw_wb_bytes = io.BytesIO()
+    raw_wb.save(raw_wb_bytes)
+    raw_wb_bytes.seek(0)
+    return raw_wb_bytes
 
 def find_col_idx(header_cols, search):
     search_clean = re.sub(r'[^a-zA-Z0-9]', '', search.lower())
@@ -164,135 +175,175 @@ def find_col_idx(header_cols, search):
 def fetch_muster_data(muster_url):
     return get_attendance_data(muster_url)
 
-def main():
+def get_available_dates():
+    """Fetches the list of available attendance dates from the website."""
+    try:
+        session = requests.Session()
+        resp = session.get(BASE_URL, headers=HEADERS, timeout=15)
+        resp.raise_for_status()
+        soup = BeautifulSoup(resp.content, 'html.parser')
+        attendance_select = soup.find('select', {'name': 'ctl00$ContentPlaceHolder1$ddl_attendance'})
+        if not attendance_select:
+            return []
+        
+        # The first option is usually '--Select--', so we skip it.
+        date_options = [opt['value'] for opt in attendance_select.find_all('option') if opt.get('value')]
+        return date_options
+    except requests.RequestException as e:
+        print(f"Error fetching dates: {e}")
+        return []
+
+def get_panchayath_and_work_codes(attendance_date, panchayath_name):
+    """Navigates to the panchayath page and extracts available work codes."""
+    panchayath_name = panchayath_name.upper()
+    try:
+        session = requests.Session()
+        resp = session.get(BASE_URL, headers=HEADERS, timeout=15)
+        soup = BeautifulSoup(resp.content, 'html.parser')
+
+        viewstate_tag = soup.find('input', {'id': '__VIEWSTATE'})
+        eventvalidation_tag = soup.find('input', {'id': '__EVENTVALIDATION'})
+        viewstategen_tag = soup.find('input', {'id': '__VIEWSTATEGENERATOR'})
+
+        if not all([viewstate_tag, eventvalidation_tag, viewstategen_tag]):
+            print("Could not find required form elements on the page.")
+            return None
+
+        data = {
+            '__VIEWSTATE': viewstate_tag['value'],
+            '__VIEWSTATEGENERATOR': viewstategen_tag['value'],
+            '__EVENTVALIDATION': eventvalidation_tag['value'],
+            'ctl00$ContentPlaceHolder1$ddlstate': STATE_VALUE,
+            'ctl00$ContentPlaceHolder1$ddl_attendance': attendance_date,
+            'ctl00$ContentPlaceHolder1$btn_showreport': 'Show Attendance',
+        }
+        headers_post = HEADERS.copy()
+        headers_post['Referer'] = BASE_URL
+        resp2 = session.post(BASE_URL, data=data, headers=headers_post, timeout=30)
+        soup2 = BeautifulSoup(resp2.content, 'html.parser')
+
+        state_table = get_table_by_id_or_div(soup2)
+        if not state_table: return None
+        karnataka_link = get_link_from_table(state_table, 1, 'KARNATAKA')
+        if not karnataka_link: return None
+        karnataka_url = urljoin(BASE_URL, karnataka_link)
+
+        resp3 = session.get(karnataka_url, headers=HEADERS, timeout=15)
+        soup3 = BeautifulSoup(resp3.content, 'html.parser')
+        dist_table = get_table_by_id_or_div(soup3)
+        if not dist_table: return None
+        ballari_link = get_link_from_table(dist_table, 1, DISTRICT_NAME)
+        if not ballari_link: return None
+        ballari_url = urljoin(karnataka_url, ballari_link)
+
+        resp4 = session.get(ballari_url, headers=HEADERS, timeout=15)
+        soup4 = BeautifulSoup(resp4.content, 'html.parser')
+        block_table = get_table_by_id_or_div(soup4)
+        if not block_table: return None
+        siruguppa_link = get_link_from_table(block_table, 1, BLOCK_NAME)
+        if not siruguppa_link: return None
+        siruguppa_url = urljoin(ballari_url, siruguppa_link)
+
+        resp5 = session.get(siruguppa_url, headers=HEADERS, timeout=15)
+        soup5 = BeautifulSoup(resp5.content, 'html.parser')
+        panch_div = soup5.find('div', {'id': 'RepPr1'})
+        if not panch_div: return None
+        panch_table = panch_div.find('table')
+        if not panch_table: return None
+        panchayath_link = get_panchayath_link(panch_table, panchayath_name)
+        if not panchayath_link: return None
+        panchayath_url = urljoin(siruguppa_url, panchayath_link)
+
+        resp6 = session.get(panchayath_url, headers=HEADERS, timeout=15)
+        soup6 = BeautifulSoup(resp6.content, 'html.parser')
+        muster_div = soup6.find('div', {'id': 'RepPr1'})
+        if not muster_div: return None
+        muster_table = muster_div.find('table')
+        if not muster_table: return None
+        
+        header_row = muster_table.find('tr')
+        if not header_row: return None
+        header_cols = [th.get_text(strip=True).replace('\u00a0', ' ').strip().lower() for th in header_row.find_all(['th', 'td'])]
+        workcode_idx = find_col_idx(header_cols, 'work code')
+        if workcode_idx is None: return None
+
+        unique_work_codes = set()
+        for row in muster_table.find_all('tr')[1:]:
+            cols = row.find_all('td')
+            if len(cols) > workcode_idx:
+                cell_text = cols[workcode_idx].get_text(strip=True)
+                match = re.search(r'(\d+/[A-Z]+/\S+)', cell_text)
+                if match:
+                    unique_work_codes.add(match.group(1).strip())
+        
+        return sorted(list(unique_work_codes))
+
+    except requests.RequestException as e:
+        print(f"Error getting work codes: {e}")
+        return None
+
+def get_attendance_reports(attendance_date, panchayath_name, choice, workcodes=None):
+    """
+    The main logic function to fetch and process attendance data, returning Excel files as BytesIO objects.
+    """
+    panchayath_name = panchayath_name.upper()
     session = requests.Session()
+    
+    # This part is duplicated from get_panchayath_and_work_codes.
+    # In a real app, you'd likely pass the session and intermediate URLs around
+    # to avoid re-fetching, but for simplicity here, we repeat the navigation.
     resp = session.get(BASE_URL, headers=HEADERS)
     soup = BeautifulSoup(resp.content, 'html.parser')
-
     viewstate_tag = soup.find('input', {'id': '__VIEWSTATE'})
     eventvalidation_tag = soup.find('input', {'id': '__EVENTVALIDATION'})
     viewstategen_tag = soup.find('input', {'id': '__VIEWSTATEGENERATOR'})
-    attendance_select = soup.find('select', {'name': 'ctl00$ContentPlaceHolder1$ddl_attendance'})
-
-    if not all([viewstate_tag, eventvalidation_tag, viewstategen_tag, attendance_select]):
-        print("Could not find required form elements on the page. The website structure may have changed.")
-        return
-
-    viewstate = viewstate_tag['value']
-    eventvalidation = eventvalidation_tag['value']
-    viewstategen = viewstategen_tag['value']
-    date_options = [opt['value'] for opt in attendance_select.find_all('option')]
-    
-    print("Available dates:", date_options)
-    attendance_date = input("Enter attendance date from above options (e.g., 18/07/2025): ").strip()
-    panchayath_name = input("Enter Panchayath name: ").strip().upper()
-
     data = {
-        '__VIEWSTATE': viewstate,
-        '__VIEWSTATEGENERATOR': viewstategen,
-        '__EVENTVALIDATION': eventvalidation,
+        '__VIEWSTATE': viewstate_tag['value'],
+        '__VIEWSTATEGENERATOR': viewstategen_tag['value'],
+        '__EVENTVALIDATION': eventvalidation_tag['value'],
         'ctl00$ContentPlaceHolder1$ddlstate': STATE_VALUE,
         'ctl00$ContentPlaceHolder1$ddl_attendance': attendance_date,
         'ctl00$ContentPlaceHolder1$btn_showreport': 'Show Attendance',
     }
-    headers_post = HEADERS.copy()
-    headers_post['Referer'] = BASE_URL
+    headers_post = HEADERS.copy(); headers_post['Referer'] = BASE_URL
     resp2 = session.post(BASE_URL, data=data, headers=headers_post)
     soup2 = BeautifulSoup(resp2.content, 'html.parser')
-
-    # State table navigation
     state_table = get_table_by_id_or_div(soup2)
-    if not state_table:
-        print("Could not find state table.")
-        return
     karnataka_link = get_link_from_table(state_table, 1, 'KARNATAKA')
-    if not karnataka_link:
-        print("Could not find Karnataka link in state table.")
-        return
     karnataka_url = urljoin(BASE_URL, karnataka_link)
-
-    # Districts table navigation
     resp3 = session.get(karnataka_url, headers=HEADERS)
     soup3 = BeautifulSoup(resp3.content, 'html.parser')
     dist_table = get_table_by_id_or_div(soup3)
-    if not dist_table:
-        print("Could not find districts table.")
-        return
     ballari_link = get_link_from_table(dist_table, 1, DISTRICT_NAME)
-    if not ballari_link:
-        print("Could not find Ballari link in districts table.")
-        return
     ballari_url = urljoin(karnataka_url, ballari_link)
-
-    # Block/Taluk table navigation
     resp4 = session.get(ballari_url, headers=HEADERS)
     soup4 = BeautifulSoup(resp4.content, 'html.parser')
     block_table = get_table_by_id_or_div(soup4)
-    if not block_table:
-        print("Could not find block/taluk table.")
-        return
     siruguppa_link = get_link_from_table(block_table, 1, BLOCK_NAME)
-    if not siruguppa_link:
-        print("Could not find Siruguppa link in block/taluk table.")
-        return
     siruguppa_url = urljoin(ballari_url, siruguppa_link)
-
-    # Panchayath table navigation
     resp5 = session.get(siruguppa_url, headers=HEADERS)
     soup5 = BeautifulSoup(resp5.content, 'html.parser')
     panch_div = soup5.find('div', {'id': 'RepPr1'})
-    if not panch_div:
-        print("Could not find panchayath table container.")
-        return
     panch_table = panch_div.find('table')
-    if not panch_table:
-        print("Could not find panchayath table.")
-        return
     panchayath_link = get_panchayath_link(panch_table, panchayath_name)
     if not panchayath_link:
         print("No NMR generated by the Panchayath")
-        return
+        return None
     panchayath_url = urljoin(siruguppa_url, panchayath_link)
-
-    # Muster Roll table navigation
     resp6 = session.get(panchayath_url, headers=HEADERS)
     soup6 = BeautifulSoup(resp6.content, 'html.parser')
     muster_div = soup6.find('div', {'id': 'RepPr1'})
-    if not muster_div:
-        print("Could not find muster roll table container.")
-        return
     muster_table = muster_div.find('table')
-    if not muster_table:
-        print("Could not find muster roll table.")
-        return
     header_row = muster_table.find('tr')
-    if not header_row:
-        print("Muster roll table is empty (no header row).")
-        return
     header_cols = [th.get_text(strip=True).replace('\u00a0', ' ').strip().lower() for th in header_row.find_all(['th', 'td'])]
     workcode_idx = find_col_idx(header_cols, 'work code')
     muster_no_idx = find_col_idx(header_cols, 'mustroll no')
     if workcode_idx is None or muster_no_idx is None:
-        print("Could not find required columns in muster roll table header.")
-        print("Header columns found:", header_cols)
-        return
-    
-    unique_work_codes = set()
-    for row in muster_table.find_all('tr')[1:]:
-        cols = row.find_all('td')
-        if len(cols) > workcode_idx:
-            cell_text = cols[workcode_idx].get_text(strip=True)
-            match = re.search(r'(\d+/[A-Z]+/\S+)', cell_text)
-            if match:
-                unique_work_codes.add(match.group(1).strip())
-
-    choice, workcodes = prompt_for_work_selection(unique_work_codes, panchayath_name)
-
+        return None
 
     rows_to_save = get_muster_roll_rows(muster_table, choice, workcodes, workcode_idx, muster_no_idx)
     if not rows_to_save:
-        print("No muster roll data found for the selection.")
-        return
+        return None
 
     # Excel setup
     wb = openpyxl.Workbook()
@@ -357,7 +408,6 @@ def main():
         muster_roll_no = rows_to_save[i][0][muster_no_idx].get_text(strip=True)
         work_code_text = rows_to_save[i][0][workcode_idx].get_text(strip=True)
         
-        print(f"Muster Roll No. {muster_roll_no} parsed ")
         # Attendance Excel
         if not attendance_header_written and header_cells:
             ws.cell(row=row_cursor, column=1, value="Muster Roll No").font = Font(bold=True)
@@ -373,23 +423,14 @@ def main():
                 ws.cell(row=row_cursor, column=1, value=muster_roll_no)
                 for col_idx, val in enumerate(att_row, 2):
                     cell = ws.cell(row=row_cursor, column=col_idx, value=val)
-                    
-                    # Column 4: Worker Name (for Gender)
                     if col_idx == 4:
                         worker_name = str(val)
-                        if '(F)' in worker_name.upper():
-                            cell.fill = FEMALE_FILL
-                        elif '(M)' in worker_name.upper():
-                            cell.fill = MALE_FILL
-                            
-                    # Column 6: Present/Absent
+                        if '(F)' in worker_name.upper(): cell.fill = FEMALE_FILL
+                        elif '(M)' in worker_name.upper(): cell.fill = MALE_FILL
                     if col_idx == 6:
                         attendance_status = str(val)
-                        if 'P' in attendance_status.upper():
-                            cell.fill = PRESENT_FILL
-                        elif 'A' in attendance_status.upper():
-                            cell.fill = ABSENT_FILL
-
+                        if 'P' in attendance_status.upper(): cell.fill = PRESENT_FILL
+                        elif 'A' in attendance_status.upper(): cell.fill = ABSENT_FILL
                 ws.cell(row=row_cursor, column=len(att_row) + 2, value=taken_by)
                 row_cursor += 1
         
@@ -435,29 +476,28 @@ def main():
         img_ws.merge_cells(start_row=start_img_row, start_column=1, end_row=end_img_row, end_column=1)
         img_ws.cell(row=start_img_row, column=1).alignment = Alignment(vertical='center', horizontal='center')
         img_row_cursor += image_height_in_rows
-        
         img_row_cursor += 5
 
         # verification_format Excel
         rfo_ws.append([
-            i + 1, # Sl No
-            '', # Officer Designation
-            attendance_date, # Verification Day
-            total_photos, # Target
-            len(img_bytes_list), # No of Photos Actual Checking Done
-            panchayath_name, # Name of GP
-            work_code_text, # Work Code
-            muster_roll_no, # MR No.
-            len(img_bytes_list), # Accepted Photo (No.)
-            0, # Rejected Photo (No.)
-            taken_by, # Taken By
-            '', # Reason of Rejection
-            '', # Action Taken
+            i + 1, '', attendance_date, total_photos, len(img_bytes_list), panchayath_name,
+            work_code_text, muster_roll_no, len(img_bytes_list), 0, taken_by, '', '',
         ])
 
+    wb_bytes, img_wb_bytes, rfo_wb_bytes = save_attendance_excel(wb, img_wb, rfo_wb)
+    raw_wb_bytes = save_raw_excel(rows_to_save, panchayath_name, attendance_date, muster_no_idx, workcode_idx, panchayath_url, muster_data_cache)
 
-    save_attendance_excel(wb, ws, img_wb, img_ws, rfo_wb, panchayath_name, attendance_date)
-    save_raw_excel(rows_to_save, panchayath_name, attendance_date, muster_no_idx, workcode_idx, panchayath_url, muster_data_cache)
+    sanitized_panchayath = panchayath_name.lower().replace('.', '').replace(' ', '_')
+    sanitized_date = attendance_date.replace('/', '_')
+
+    return {
+        f"nmr_{sanitized_panchayath}_{sanitized_date}.xlsx": wb_bytes,
+        f"nmr_images_{sanitized_panchayath}_{sanitized_date}.xlsx": img_wb_bytes,
+        f"verification_format_{sanitized_panchayath}_{sanitized_date}.xlsx": rfo_wb_bytes,
+        f"nmr_raw_{sanitized_panchayath}_{sanitized_date}.xlsx": raw_wb_bytes,
+    }
 
 if __name__ == "__main__":
-    main()
+    # This part remains for potential CLI usage, but the Streamlit app will use the functions directly.
+    pass
+
