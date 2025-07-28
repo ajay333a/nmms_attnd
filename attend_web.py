@@ -282,7 +282,7 @@ def get_panchayath_and_work_codes(attendance_date, panchayath_name):
         print(f"Error getting work codes: {e}")
         return None
 
-def get_attendance_reports(attendance_date, panchayath_name, choice, workcodes=None):
+def get_attendance_reports(attendance_date, panchayath_name, choice, workcodes=None, progress_callback=None):
     """
     The main logic function to fetch and process attendance data, returning Excel files as BytesIO objects.
     """
@@ -393,6 +393,9 @@ def get_attendance_reports(attendance_date, panchayath_name, choice, workcodes=N
 
     # Main loop: cache attendance data for each muster roll
     muster_data_cache = {}
+    if progress_callback:
+        progress_callback(0, "Fetching muster roll data from the web...")
+
     with ThreadPoolExecutor(max_workers=8) as executor:
         muster_urls = [urljoin(panchayath_url, href) for _, href in rows_to_save]
         results = list(executor.map(fetch_muster_data, muster_urls))
@@ -402,12 +405,18 @@ def get_attendance_reports(attendance_date, panchayath_name, choice, workcodes=N
         if photo_urls:
             total_photos += len(photo_urls)
 
+    total_muster_rolls = len(rows_to_save)
     for i, (muster_url, (attendance_data, photo_urls, work_name, header_cells, taken_by)) in enumerate(zip(muster_urls, results)):
         muster_data_cache[muster_url] = (attendance_data, photo_urls, work_name, header_cells, taken_by)
         img_bytes_list = [download_photo(url) for url in photo_urls] if photo_urls else []
         muster_roll_no = rows_to_save[i][0][muster_no_idx].get_text(strip=True)
         work_code_text = rows_to_save[i][0][workcode_idx].get_text(strip=True)
         
+        if progress_callback:
+            progress = (i + 1) / total_muster_rolls
+            message = f"Parsing Muster Roll: {muster_roll_no} ({i + 1}/{total_muster_rolls})"
+            progress_callback(progress, message)
+
         # Attendance Excel
         if not attendance_header_written and header_cells:
             ws.cell(row=row_cursor, column=1, value="Muster Roll No").font = Font(bold=True)
@@ -480,7 +489,7 @@ def get_attendance_reports(attendance_date, panchayath_name, choice, workcodes=N
 
         # verification_format Excel
         rfo_ws.append([
-            i + 1, '', attendance_date, total_photos, len(img_bytes_list), panchayath_name,
+            i + 1, '', attendance_date, total_photos, total_photos, panchayath_name,
             work_code_text, muster_roll_no, len(img_bytes_list), 0, taken_by, '', '',
         ])
 

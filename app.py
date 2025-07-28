@@ -29,17 +29,25 @@ if 'page_key' not in st.session_state:
     init_session_state()
 
 def reset_app():
-    # Increment the page_key to trigger a re-render of the main container
     st.session_state.page_key += 1
-    # Clear all other session state variables
     keys_to_clear = ['dates', 'work_codes', 'selected_panchayath', 'reports', 'loading']
     for key in keys_to_clear:
         if key in st.session_state:
             del st.session_state[key]
-    # Re-initialize the session state
     init_session_state()
-    st.experimental_rerun()
+    st.rerun()
 
+# --- Helper Functions ---
+def get_friendly_filename(filename):
+    if filename.startswith("nmr_images_"):
+        return "NMR Images Report"
+    elif filename.startswith("verification_format_"):
+        return "Verification Format"
+    elif filename.startswith("nmr_raw_"):
+        return "Raw Attendance Data"
+    elif filename.startswith("nmr_"):
+        return "Attendance with Images report"
+    return filename
 
 # --- Data Fetching Functions ---
 def fetch_dates():
@@ -65,20 +73,33 @@ def fetch_panchayaths_and_workcodes(attendance_date, panchayath_name):
 def generate_reports(attendance_date, panchayath_name, choice, workcodes):
     st.session_state.loading = True
     st.session_state.reports = None
-    with st.spinner("Generating reports... This may take a while."):
-        reports = get_attendance_reports(attendance_date, panchayath_name, choice, workcodes)
-        if reports:
-            st.session_state.reports = reports
-            st.success("Reports generated successfully!")
-        else:
-            st.error("Failed to generate reports.")
+    
+    progress_bar = st.progress(0)
+    progress_text = st.empty()
+
+    def update_progress(progress, message):
+        progress_bar.progress(progress)
+        progress_text.text(message)
+
+    reports = get_attendance_reports(
+        attendance_date, panchayath_name, choice, workcodes, progress_callback=update_progress
+    )
+    
+    progress_bar.empty()
+    progress_text.empty()
+
+    if reports:
+        st.session_state.reports = reports
+        st.success("Reports generated successfully!")
+    else:
+        st.error("Failed to generate reports.")
+    
     st.session_state.loading = False
 
 # --- UI Layout ---
 main_container = st.container(key=f"main_container_{st.session_state.page_key}")
 
 with main_container:
-    # Initial Step: Fetch Dates
     if not st.session_state.dates:
         fetch_dates()
 
@@ -100,19 +121,10 @@ with main_container:
 
             selected_work_codes = []
             if choice == 'Specific Work Codes':
-                # Use a wider layout for the multiselect and adjust tag style
-                st.markdown("""
-                    <style>
-                        div[data-baseweb="select"] > div {width: 100%;}
-                        .stMultiSelect [data-baseweb="tag"] {
-                            height: auto !important;
-                            white-space: normal !important;
-                            max-width: 100% !important;
-                            padding: 5px 8px !important;
-                        }
-                    </style>
-                """, unsafe_allow_html=True)
-                selected_work_codes = st.multiselect("Select Work Codes", st.session_state.work_codes)
+                with st.expander("Select Work Codes", expanded=True):
+                    for code in st.session_state.work_codes:
+                        if st.checkbox(code, key=f"cb_{code}"):
+                            selected_work_codes.append(code)
             
             if st.button("Generate and Download Reports", disabled=st.session_state.loading):
                 if choice == 'Specific Work Codes' and not selected_work_codes:
@@ -126,12 +138,13 @@ with main_container:
             st.subheader("Downloads")
             st.info("Click the buttons below to download your generated Excel reports.")
             
-            # Create columns for download buttons for better layout
-            cols = st.columns(len(st.session_state.reports))
+            num_reports = len(st.session_state.reports)
+            cols = st.columns(num_reports if num_reports > 0 else 1)
+            
             for idx, (filename, data) in enumerate(st.session_state.reports.items()):
                 with cols[idx]:
                     st.download_button(
-                        label=f"Download {filename.split('_')[1]}", # Cleaner label
+                        label=f"Download {get_friendly_filename(filename)}",
                         data=data,
                         file_name=filename,
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -140,7 +153,6 @@ with main_container:
     else:
         st.error("Application could not start. Please ensure the backend is running and configured correctly.")
 
-    # --- Reset Button ---
     st.markdown("---")
     if st.button("Reset Application"):
         reset_app()
