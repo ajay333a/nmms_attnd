@@ -5,3 +5,4 @@ selenium
 openpyxl
 Pillow
 pandas
+tenacity

@@ -9,6 +9,7 @@ from attendance_downloader import get_attendance_data, download_photo
 from openpyxl.drawing.image import Image as XLImage
 import re
 from concurrent.futures import ThreadPoolExecutor
+from tenacity import retry, stop_after_attempt, wait_fixed, retry_if_exception_type
 
 # Constants
 BASE_URL = "https://mnregaweb4.nic.in/nregaarch/View_NMMS_atten_date_new.aspx?fin_year=2024-2025&Digest=HNrisV4bhHnb7Gve3mAKYQ"
@@ -19,7 +20,7 @@ TALUK_NAME = 'Siruguppa'
 DISTRICT_LABEL = 'Ballari'
 
 HEADERS = {
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.3'
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36'
 }
 
 # Fills for conditional formatting
@@ -172,9 +173,19 @@ def find_col_idx(header_cols, search):
             return i
     return None
 
+@retry(
+    stop=stop_after_attempt(3),
+    wait=wait_fixed(2),
+    retry=retry_if_exception_type(requests.exceptions.RequestException)
+)
 def fetch_muster_data(muster_url):
     return get_attendance_data(muster_url)
 
+@retry(
+    stop=stop_after_attempt(3),
+    wait=wait_fixed(2),
+    retry=retry_if_exception_type(requests.exceptions.RequestException)
+)
 def get_available_dates():
     """Fetches the list of available attendance dates from the website."""
     try:
@@ -193,6 +204,11 @@ def get_available_dates():
         print(f"Error fetching dates: {e}")
         return []
 
+@retry(
+    stop=stop_after_attempt(3),
+    wait=wait_fixed(2),
+    retry=retry_if_exception_type(requests.exceptions.RequestException)
+)
 def get_panchayath_and_work_codes(attendance_date, panchayath_name):
     """Navigates to the panchayath page and extracts available work codes."""
     panchayath_name = panchayath_name.upper()
@@ -282,6 +298,11 @@ def get_panchayath_and_work_codes(attendance_date, panchayath_name):
         print(f"Error getting work codes: {e}")
         return None
 
+@retry(
+    stop=stop_after_attempt(3),
+    wait=wait_fixed(2),
+    retry=retry_if_exception_type(requests.exceptions.RequestException)
+)
 def get_attendance_reports(attendance_date, panchayath_name, choice, workcodes=None, progress_callback=None):
     """
     The main logic function to fetch and process attendance data, returning Excel files as BytesIO objects.

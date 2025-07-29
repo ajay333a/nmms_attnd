@@ -4,12 +4,18 @@ from openpyxl import Workbook
 from openpyxl.drawing.image import Image as XLImage
 from bs4 import BeautifulSoup
 from openpyxl.styles import Alignment, Font
+from tenacity import retry, stop_after_attempt, wait_fixed, retry_if_exception_type
 
 STARTING_URL = "https://mnregaweb4.nic.in/nregaarch/View_NMMS_atten_date_dtl_rpt.aspx?page=&short_name=KN&state_name=KARNATAKA&state_code=15&district_name=BALLARI&district_code=1505&block_name=SIRUGUPPA&block_code=1505007&"
 DEFAULT_DISTRICT = "Ballari"
 DEFAULT_TALUK = "Siruguppa"
 
 
+@retry(
+    stop=stop_after_attempt(3),
+    wait=wait_fixed(2),
+    retry=retry_if_exception_type(requests.exceptions.RequestException)
+)
 def get_attendance_data(url):
     try:
         response = requests.get(url)
@@ -81,6 +87,11 @@ def get_attendance_data(url):
     return attendance_data, photo_urls, work_name, header_cells, taken_by
 
 
+@retry(
+    stop=stop_after_attempt(3),
+    wait=wait_fixed(2),
+    retry=retry_if_exception_type(requests.exceptions.RequestException)
+)
 def download_photo(url):
     if not url:
         return None
