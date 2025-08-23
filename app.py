@@ -1,5 +1,4 @@
 import streamlit as st
-import pandas as pd
 from attend_web import get_available_dates, get_panchayath_and_work_codes, get_attendance_reports
 
 st.set_page_config(page_title="NMMS Attendance Downloader", layout="wide")
